@@ -24,7 +24,7 @@ function useAutoRefresh(ms){
   return {tick,lastUpdate,countdown,refresh};
 }
 
-function RefreshBar({lastUpdate,countdown,refresh}){
+function RefreshBar({lastUpdate,countdown,refresh,live,day}){
   const mins=Math.floor(countdown/60);
   const secs=Math.floor(countdown%60);
   const ago=Math.floor((Date.now()-lastUpdate)/1000);
@@ -35,10 +35,68 @@ function RefreshBar({lastUpdate,countdown,refresh}){
       <span style={{color:C.muted}}>LIVE</span>
       <span style={{color:C.text}}>Updated {agoStr}</span>
       <span style={{color:C.muted}}>• Next refresh in {mins}:{secs.toString().padStart(2,"0")}</span>
+      {day&&<span style={{color:C.red,fontWeight:700}}>• DAY {day}</span>}
+      {live&&<span style={{color:C.green,fontSize:8}}>● Wikipedia synced</span>}
     </div>
     <button onClick={refresh} style={{background:C.green+"22",color:C.green,border:`1px solid ${C.green}33`,borderRadius:4,padding:"3px 10px",fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>↻ REFRESH NOW</button>
   </div>
 }
+
+// ═══════════════════════════════
+// LIVE STATS FROM WIKIPEDIA + AUTO DAY CALC
+// ═══════════════════════════════
+const WAR_START = new Date("2026-02-28T00:00:00Z");
+const DEFAULTS = {day:4,iranDead:"912+",iranSrc:"HRA verified",strikes:"2,000+",strikesSrc:"CENTCOM",countries:"9",countriesSrc:"IRGC claims",oil:"$83/bbl",oilSrc:"+13%",hormuz:"~0",hormuzSrc:"De facto closed",desal:"90%",desalSrc:"Kuwait dependency"};
+
+function useLiveStats(tick){
+  const [stats,setStats]=useState(DEFAULTS);
+  const [live,setLive]=useState(false);
+
+  useEffect(()=>{
+    // Auto-calculate day
+    const now=new Date();
+    const day=Math.max(1,Math.ceil((now-WAR_START)/(86400000)));
+
+    // Fetch Wikipedia for latest numbers
+    const wikiUrl="https://en.wikipedia.org/w/api.php?action=parse&page=2026_Israeli%E2%80%93United_States_strikes_on_Iran&prop=wikitext&format=json&origin=*";
+    fetch(wikiUrl,{signal:AbortSignal.timeout(10000)})
+      .then(r=>r.json()).then(data=>{
+        const txt=data?.parse?.wikitext?.["*"]||"";
+        const s={...DEFAULTS,day};
+
+        // Parse casualties from infobox/text
+        const iranDeadMatch=txt.match(/(\d[\d,]+)\s*(?:civilians?\s*)?(?:killed|dead|deaths)/i) 
+          || txt.match(/Red Crescent[^.]*?(\d[\d,]+)/i)
+          || txt.match(/(\d[\d,]+)\s*people\s*(?:have been|were)\s*killed/i);
+        if(iranDeadMatch){
+          const num=iranDeadMatch[1].replace(/,/g,"");
+          s.iranDead=parseInt(num)>500?`${iranDeadMatch[1]}+`:s.iranDead;
+          s.iranSrc="Wikipedia (live)";
+        }
+
+        // Parse strikes count
+        const strikesMatch=txt.match(/([\d,]+)\+?\s*(?:strikes|sorties|munitions)/i);
+        if(strikesMatch){
+          s.strikes=`${strikesMatch[1]}+`;
+          s.strikesSrc="Wikipedia (live)";
+        }
+
+        // Parse Hormuz status
+        if(txt.toLowerCase().includes("strait")&&(txt.toLowerCase().includes("closed")||txt.toLowerCase().includes("closure"))){
+          s.hormuz="CLOSED";
+          s.hormuzSrc="Wikipedia (live)";
+        }
+
+        setStats(s);
+        setLive(true);
+      }).catch(()=>{
+        setStats(p=>({...p,day}));
+      });
+  },[tick]);
+
+  return {stats,live};
+}
+
 
 // ═══════════════════════════════
 // LIVE NEWS FEED (multiple proxies + all news)
@@ -222,7 +280,7 @@ function DashCard({title,sub,color,onClick,icon,tags}){
 // ═══════════════════════════════
 // HOME PAGE
 // ═══════════════════════════════
-function Home({go,tick}){
+function Home({go,tick,stats,live}){
   return <div style={{background:C.bg,minHeight:"100vh",fontFamily:"'DM Sans','Inter',sans-serif"}}>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
 
@@ -234,7 +292,7 @@ function Home({go,tick}){
       <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10,marginBottom:16,flexWrap:"wrap"}}>
         <div style={{width:12,height:12,borderRadius:"50%",background:C.red,boxShadow:`0 0 20px ${C.red}88`,animation:"pulse 2s infinite"}}/>
         <span style={{color:C.muted,fontSize:10,textTransform:"uppercase",letterSpacing:3,fontWeight:600}}>LIVE IMPARTIAL ANALYSIS</span>
-        <Badge t="DAY 4" c={C.red}/><Badge t="ALL SIDES" c={C.purple}/><Badge t="3 DASHBOARDS" c={C.blue}/><Badge t="LIVE DATA" c={C.green}/>
+        <Badge t={`DAY ${stats.day}`} c={C.red}/><Badge t="ALL SIDES" c={C.purple}/><Badge t="3 DASHBOARDS" c={C.blue}/><Badge t={live?"LIVE DATA":"STATIC"} c={live?C.green:C.gold}/>
       </div>
       <h1 style={{color:C.white,fontSize:36,fontWeight:800,margin:"0 0 8px",lineHeight:1.2}}>2026 US-Iran Conflict</h1>
       <h2 style={{color:C.muted,fontSize:18,fontWeight:400,margin:"0 0 8px"}}>Global Intelligence Platform</h2>
@@ -254,13 +312,21 @@ function Home({go,tick}){
         tags={[["GFW API",C.green],["LIVE MAP",C.cyan],["DARK FLEET",C.red]]}/>
     </div>
 
-    {/* QUICK STATS */}
+    {/* QUICK STATS — LIVE */}
     <div style={{maxWidth:900,margin:"0 auto",padding:"0 40px 20px"}}>
       <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:8}}>
-        {[["912+","Iran civilians killed",C.red],["2,000+","US-Israel strikes",C.blue],["9","Countries hit by Iran",C.green],["$83/bbl","Brent crude (+13%)",C.gold],["~0","Hormuz transits/day",C.orange],["90%","Kuwait: water from desal",C.purple]].map(([n,l,c],i)=>
+        {[
+          [stats.iranDead,"Civilians killed (Iran)",C.red,stats.iranSrc],
+          [stats.strikes,"US-Israel strikes",C.blue,stats.strikesSrc],
+          [stats.countries,"Countries hit by Iran",C.green,stats.countriesSrc],
+          [stats.oil,"Brent crude",C.gold,stats.oilSrc],
+          [stats.hormuz,"Hormuz transits/day",C.orange,stats.hormuzSrc],
+          [stats.desal,"Kuwait: water from desal",C.purple,stats.desalSrc],
+        ].map(([n,l,c,src],i)=>
           <div key={i} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:6,borderTop:`2px solid ${c}`,padding:"10px 8px",textAlign:"center"}}>
             <div style={{color:c,fontSize:16,fontWeight:800}}>{n}</div>
             <div style={{color:C.muted,fontSize:8,marginTop:2}}>{l}</div>
+            <div style={{color:live?C.green:C.muted,fontSize:7,marginTop:3,fontStyle:"italic"}}>{src}</div>
           </div>
         )}
       </div>
@@ -297,7 +363,7 @@ function Home({go,tick}){
     </div>
 
     <div style={{textAlign:"center",padding:"16px",borderTop:`1px solid ${C.border}`}}>
-      <p style={{color:C.muted,fontSize:10,margin:0}}>Updated March 4, 2026 | Day 4 | 3 Dashboards | Live Data | 23+ Sources</p>
+      <p style={{color:C.muted,fontSize:10,margin:0}}>Day {stats.day} of Active Conflict | 3 Dashboards | Live Data | 23+ Sources</p>
     </div>
     <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}`}</style>
   </div>
@@ -322,15 +388,16 @@ function TopNav({page,go}){
 export default function App(){
   const [page,setPage]=useState(0);
   const {tick,lastUpdate,countdown,refresh}=useAutoRefresh(REFRESH_MS);
+  const {stats,live}=useLiveStats(tick);
 
   if(page===0) return <>
-    <RefreshBar lastUpdate={lastUpdate} countdown={countdown} refresh={refresh}/>
-    <Home go={setPage} tick={tick}/>
+    <RefreshBar lastUpdate={lastUpdate} countdown={countdown} refresh={refresh} live={live} day={stats.day}/>
+    <Home go={setPage} tick={tick} stats={stats} live={live}/>
   </>;
 
   return <div style={{background:C.bg,minHeight:"100vh",fontFamily:"'DM Sans','Inter',sans-serif"}}>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
-    <RefreshBar lastUpdate={lastUpdate} countdown={countdown} refresh={refresh}/>
+    <RefreshBar lastUpdate={lastUpdate} countdown={countdown} refresh={refresh} live={live} day={stats.day}/>
     <TopNav page={page} go={setPage}/>
     {page===1 && <OriginalDashboard key={tick}/>}
     {page===2 && <GlobalDashboard key={tick}/>}
