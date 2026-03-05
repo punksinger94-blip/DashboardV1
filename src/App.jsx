@@ -41,67 +41,105 @@ function RefreshBar({lastUpdate,countdown,refresh}){
 }
 
 // ═══════════════════════════════
-// LIVE NEWS FEED (RSS via proxy)
+// LIVE NEWS FEED (multiple proxies + all news)
 // ═══════════════════════════════
 function LiveNewsFeed({tick}){
   const [news,setNews]=useState([]);
   const [loading,setLoading]=useState(true);
-  const [error,setError]=useState(null);
+  const [feedSrc,setFeedSrc]=useState("all");
+
+  const rssFeeds = [
+    {src:"Al Jazeera",rss:"https://www.aljazeera.com/xml/rss/all.xml",color:C.cyan},
+    {src:"BBC Mid-East",rss:"https://feeds.bbci.co.uk/news/world/middle_east/rss.xml",color:C.orange},
+    {src:"Reuters World",rss:"https://www.reutersagency.com/feed/?taxonomy=best-sectors&post_type=best",color:C.blue},
+    {src:"NPR World",rss:"https://feeds.npr.org/1004/rss.xml",color:C.purple},
+    {src:"Guardian World",rss:"https://www.theguardian.com/world/rss",color:C.green},
+  ];
+
+  const proxyFetch = async (rssUrl) => {
+    const proxies = [
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(rssUrl)}`,
+      `https://corsproxy.io/?${encodeURIComponent(rssUrl)}`,
+      `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}&count=20`,
+    ];
+    for (const proxy of proxies) {
+      try {
+        const res = await fetch(proxy, {signal: AbortSignal.timeout(8000)});
+        if (!res.ok) continue;
+        const ct = res.headers.get("content-type") || "";
+        if (ct.includes("json")) {
+          const j = await res.json();
+          if (j.items) return j.items;
+          if (j.contents) return parseXML(j.contents);
+        }
+        const txt = await res.text();
+        if (txt.includes("<item") || txt.includes("<entry")) return parseXML(txt);
+      } catch(e) { continue; }
+    }
+    return [];
+  };
+
+  const parseXML = (xml) => {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xml, "text/xml");
+      const items = [...doc.querySelectorAll("item"), ...doc.querySelectorAll("entry")];
+      return items.slice(0, 20).map(it => ({
+        title: it.querySelector("title")?.textContent || "",
+        link: it.querySelector("link")?.textContent || it.querySelector("link")?.getAttribute("href") || "",
+        pubDate: it.querySelector("pubDate")?.textContent || it.querySelector("published")?.textContent || it.querySelector("updated")?.textContent || "",
+        description: (it.querySelector("description")?.textContent || it.querySelector("summary")?.textContent || "").replace(/<[^>]*>/g,"").slice(0,120),
+      }));
+    } catch(e) { return []; }
+  };
 
   useEffect(()=>{
-    const feeds = [
-      {src:"Al Jazeera",url:"https://api.rss2json.com/v1/api.json?rss_url=https://www.aljazeera.com/xml/rss/all.xml&count=15"},
-      {src:"BBC",url:"https://api.rss2json.com/v1/api.json?rss_url=https://feeds.bbci.co.uk/news/world/middle_east/rss.xml&count=15"},
-    ];
     setLoading(true);
-    Promise.allSettled(feeds.map(f=>
-      fetch(f.url).then(r=>r.json()).then(d=>
-        (d.items||[]).filter(it=>{
-          const t=(it.title||"").toLowerCase();
-          return t.includes("iran")||t.includes("hormuz")||t.includes("gulf")||t.includes("strait")||
-                 t.includes("tehran")||t.includes("irgc")||t.includes("khamenei")||t.includes("oil")||
-                 t.includes("qatar")||t.includes("kuwait")||t.includes("bahrain")||t.includes("uae")||
-                 t.includes("saudi")||t.includes("middle east")||t.includes("conflict");
-        }).map(it=>({...it,source:f.src}))
-      ).catch(()=>[])
-    )).then(results=>{
-      const all=results.flatMap(r=>r.value||[])
-        .sort((a,b)=>new Date(b.pubDate)-new Date(a.pubDate))
-        .slice(0,12);
-      setNews(all);
+    Promise.allSettled(
+      rssFeeds.map(f => proxyFetch(f.rss).then(items => items.map(it => ({...it, source: f.src, sourceColor: f.color}))))
+    ).then(results => {
+      let all = results.flatMap(r => r.value || []).filter(n => n.title && n.title.length > 5);
+      all.sort((a,b) => new Date(b.pubDate||0) - new Date(a.pubDate||0));
+      const seen = new Set();
+      all = all.filter(n => { const k = n.title.slice(0,50).toLowerCase(); if(seen.has(k)) return false; seen.add(k); return true; });
+      setNews(all.slice(0, 30));
       setLoading(false);
-    }).catch(e=>{setError(e.message);setLoading(false)});
+    });
   },[tick]);
 
-  if(error) return <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:16}}>
-    <div style={{color:C.red,fontSize:11}}>News feed unavailable — RSS proxy may be rate limited. Refresh in a few minutes.</div>
-  </div>;
+  const filtered = feedSrc === "all" ? news : news.filter(n => n.source === feedSrc);
 
   return <div style={{background:C.card,border:`1px solid ${C.border}`,borderTop:`2px solid ${C.cyan}`,borderRadius:8,padding:"14px 18px"}}>
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
       <div style={{display:"flex",alignItems:"center",gap:8}}>
         <div style={{width:6,height:6,borderRadius:"50%",background:C.red,animation:"pulse 1.5s infinite"}}/>
-        <span style={{color:C.cyan,fontSize:12,fontWeight:700}}>LIVE NEWS FEED</span>
-        <span style={{color:C.muted,fontSize:9}}>Iran / Gulf / Hormuz</span>
+        <span style={{color:C.cyan,fontSize:12,fontWeight:700}}>LIVE NEWS</span>
       </div>
-      <span style={{color:C.muted,fontSize:9}}>{news.length} stories • Al Jazeera + BBC</span>
+      <span style={{color:C.muted,fontSize:9}}>{filtered.length} stories</span>
     </div>
-    {loading?<div style={{color:C.muted,fontSize:11,padding:20,textAlign:"center"}}>Loading headlines...</div>:
-    <div style={{maxHeight:320,overflow:"auto"}}>
-      {news.map((n,i)=>{
-        const time=n.pubDate?new Date(n.pubDate):null;
-        const tStr=time?time.toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}):"";
-        return <a key={i} href={n.link} target="_blank" rel="noopener noreferrer" style={{display:"block",padding:"8px 0",borderBottom:`1px solid ${C.border}15`,textDecoration:"none",transition:"background 0.15s"}}
-          onMouseEnter={e=>e.currentTarget.style.background=C.cardAlt+"44"}
+    <div style={{display:"flex",gap:4,marginBottom:8,flexWrap:"wrap"}}>
+      <button onClick={()=>setFeedSrc("all")} style={{background:feedSrc==="all"?C.cyan+"33":"transparent",color:feedSrc==="all"?C.cyan:C.muted,border:`1px solid ${feedSrc==="all"?C.cyan+"55":C.border}`,borderRadius:3,padding:"2px 8px",fontSize:9,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>ALL</button>
+      {rssFeeds.map(f=><button key={f.src} onClick={()=>setFeedSrc(f.src)} style={{background:feedSrc===f.src?f.color+"33":"transparent",color:feedSrc===f.src?f.color:C.muted,border:`1px solid ${feedSrc===f.src?f.color+"55":C.border}`,borderRadius:3,padding:"2px 8px",fontSize:9,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>{f.src.split(" ")[0]}</button>)}
+    </div>
+    {loading ? <div style={{color:C.muted,fontSize:11,padding:30,textAlign:"center"}}>
+      <div style={{fontSize:16,marginBottom:6}}>📡</div>Fetching live headlines from 5 sources...
+    </div> :
+    <div style={{maxHeight:340,overflow:"auto"}}>
+      {filtered.map((n,i)=>{
+        const time = n.pubDate ? new Date(n.pubDate) : null;
+        const tStr = time && !isNaN(time) ? time.toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "";
+        return <a key={i} href={n.link} target="_blank" rel="noopener noreferrer" style={{display:"block",padding:"7px 4px",borderBottom:`1px solid ${C.border}20`,textDecoration:"none",borderRadius:4,transition:"background 0.1s"}}
+          onMouseEnter={e=>e.currentTarget.style.background=C.cardAlt}
           onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-          <div style={{display:"flex",gap:8,alignItems:"baseline"}}>
-            <Badge t={n.source} c={n.source==="Al Jazeera"?C.cyan:C.orange}/>
-            <span style={{color:C.muted,fontSize:8,fontFamily:"monospace"}}>{tStr}</span>
+          <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:2}}>
+            <span style={{background:(n.sourceColor||C.cyan)+"22",color:n.sourceColor||C.cyan,padding:"1px 6px",borderRadius:2,fontSize:8,fontWeight:700}}>{n.source}</span>
+            {tStr && <span style={{color:C.muted,fontSize:8,fontFamily:"monospace"}}>{tStr}</span>}
           </div>
-          <div style={{color:C.white,fontSize:11,fontWeight:500,marginTop:3,lineHeight:1.4}}>{n.title}</div>
+          <div style={{color:C.white,fontSize:11,fontWeight:500,lineHeight:1.4}}>{n.title}</div>
+          {n.description && <div style={{color:C.muted,fontSize:9,marginTop:2,lineHeight:1.3}}>{n.description}...</div>}
         </a>
       })}
-      {news.length===0&&<div style={{color:C.muted,fontSize:11,padding:20,textAlign:"center"}}>No Iran/Gulf headlines found in current feed cycle. Will retry on next refresh.</div>}
+      {filtered.length===0 && <div style={{color:C.muted,fontSize:11,padding:20,textAlign:"center"}}>No headlines from this source yet. Try "ALL" or refresh.</div>}
     </div>}
   </div>
 }
